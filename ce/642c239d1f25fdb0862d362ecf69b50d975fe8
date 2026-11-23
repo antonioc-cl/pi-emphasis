@@ -1,0 +1,21 @@
+index.ts
+  s_f739542cd8a4c5::t_4e8f80e94e1803 151-152,167-169,213,218,223-227,235,239,245
+test/emphasis.test.ts
+  s_f739542cd8a4c5::t_695a5922a65477 124-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ce642c239d1f25fdb0862d362ecf69b50d975fe8",
+  "prompts": {},
+  "sessions": {
+    "s_f739542cd8a4c5": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a20a17-85b4-7552-b84c-9918f2780357",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Antonio Correa <antonio.correa@gmail.com>"
+    }
+  }
+}
