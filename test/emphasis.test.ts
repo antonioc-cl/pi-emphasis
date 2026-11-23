@@ -121,15 +121,47 @@ describe("email autolinks", () => {
 			}
 		});
 
-		test(`${name}: only the affected bold span falls back to native color`, () => {
-			const decorated = decorate("**ordinary** **person@example.com** **later**", ansiPalette);
-			expect(decorated).toBe(`**${open}ordinary\x1b[39m** **person@example.com** **${open}later\x1b[39m**`);
-			expect(decorate("**ordinary `person@example.com` prose**", ansiPalette)).toBe(`**${open}ordinary \`person@example.com\`${open} prose\x1b[39m**`);
-			expect(decorate("**person@example.com", ansiPalette)).toBe("**person@example.com");
-			expect(decorate("**→person@example.com** [[Done]]", ansiPalette)).toBe(`**→person@example.com** ${decorate("[[Done]]", ansiPalette)}`);
-			expect(decorate("**ordinary → text**", ansiPalette)).toBe(`**${open}ordinary ${open}→\x1b[39m${open} text\x1b[39m**`);
-			expect(decorate("__ordinary__ __first__last@example.com__ __later__", ansiPalette)).toBe(`__${open}ordinary\x1b[39m__ __first__last@example.com__ __${open}later\x1b[39m__`);
-			expect(decorate("__ordinary first___last prose__", ansiPalette)).toBe(`__${open}ordinary first___last prose\x1b[39m__`);
+		test.each([
+			"____first@example.com____",
+			...[2, 3, 4].map((count) => `__first+${"_".repeat(count)}last@example.com__`),
+			"**ordinary** **person@example.com** **later** [[Done]] →",
+			"**ordinary `person@example.com` prose**",
+			"**person@example.com",
+			"→person@example.com [[Done]]person@example.com",
+			"## **person@example.com** [[Done]]",
+			"**Contact:** @synthetic [[Done]]",
+		])(`${name}: %s preserves native parsing and rendering`, (source) => {
+			const decorated = decorate(source, ansiPalette);
+			const links = (text: string) => {
+				const result: { text: string; href: string }[] = [];
+				marked.walkTokens(marked.lexer(text), (token) => {
+					if (token.type === "link") result.push({ text: token.text, href: token.href });
+				});
+				return result;
+			};
+			expect(links(decorated)).toEqual(links(source));
+			const capabilities = getCapabilities();
+			try {
+				setCapabilities({ ...capabilities, hyperlinks: true });
+				const render = (text: string) => new Markdown(text, 0, 0, markdownTheme).render(200).join("\n");
+				const rendered = render(decorated);
+				const baseline = render(source);
+				expect(rendered).toBe(baseline);
+				expect([...rendered.matchAll(/\x1b\]8;;([^\x1b]+)\x1b\\/g)].map((match) => match[1])).toEqual(links(source).map(({ href }) => href));
+			} finally {
+				setCapabilities(capabilities);
+			}
+			expect(decorated).toBe(source);
+		});
+
+		test(`${name}: only @-containing source lines bypass decoration`, () => {
+			const ordinary = "**ordinary** → [[Done]]";
+			const email = "**person@example.com** [[Done]]";
+			expect(decorate(`${ordinary}\n${email}\n${ordinary}`, ansiPalette)).toBe(`${decorate(ordinary, ansiPalette)}\n${email}\n${decorate(ordinary, ansiPalette)}`);
+			expect(decorate(ordinary, ansiPalette)).toContain(`${open}ordinary\x1b[39m`);
+			expect(decorate(ordinary, ansiPalette)).not.toContain("[[Done]]");
+			const fenced = "```@synthetic\n**ordinary** [[Done]]\n```\n";
+			expect(decorate(fenced + ordinary, ansiPalette)).toBe(fenced + decorate(ordinary, ansiPalette));
 		});
 	}
 });

@@ -148,8 +148,8 @@ export function createPalette(theme: ThemeLike, boldColor = "mdLink"): Palette {
 }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-// Intraword underscore runs are literal, including runs longer than two underscores.
-const INLINE = /(\\*)(\*\*|(?<![\p{L}\p{N}_])__|__(?![\p{L}\p{N}_]))|\[\[([^\[\]\n]{1,32})\]\]|([✓✔✗✘→]|[├└]──)/gu;
+// Escaped bold markers, bold markers, or a [[pill]] of 1-32 characters.
+const INLINE = /(\\*)(\*\*|__)|\[\[([^\[\]\n]{1,32})\]\]/g;
 
 /** Apply colors to assistant Markdown, leaving code blocks, inline code and headings alone. */
 export function decorate(markdown: string, palette: Palette): string {
@@ -163,6 +163,9 @@ export function decorate(markdown: string, palette: Palette): string {
 			out.push(line);
 		} else if (fenceMatch) {
 			fence = fenceMatch[1];
+			out.push(line);
+		} else if (line.includes("@")) {
+			// ANSI tails can become part of an email autolink; let Pi render the source line.
 			out.push(line);
 		} else if (/^ {0,3}#{1,6}\s/.test(line)) {
 			out.push(line.replace(/^( {0,3}#{1,6}\s+)(.+)$/, (_, hashes: string, title: string) => hashes + withLabelIcon(title))); // Pi already colors headings.
@@ -207,49 +210,39 @@ function decorateLine(line: string, palette: Palette, open: string, close: strin
 	const parts = line.replace(LEAD_LABEL, (_, before: string, label: string, after: string) => before + withLabelIcon(label) + after).split(/(`+[^`]*?`+)/g);
 	let result = "";
 	let inBold: string | undefined;
-	let boldOpen = open;
-	let boldClose = close;
-	let nativeBold = false;
-	const reopen = () => (inBold ? `\x1b[1m${boldOpen}` : "");
+	const reopen = () => (inBold ? `\x1b[1m${open}` : "");
 	for (let i = 0; i < parts.length; i++) {
 		const part = parts[i];
 		if (i % 2 === 1) {
 			// Pi's code color ends with a foreground reset; restore the bold color after it.
-			result += inBold ? `${part}${boldOpen}` : part;
+			result += inBold ? `${part}${open}` : part;
 			continue;
 		}
 		let prose = part;
 		if (process.env.PI_EMPHASIS_PILL_ICONS !== "0") prose = prose.replace(ACTION_LABEL, (_, before: string, word: string, after: string) => `${before}${ACTION_ICONS[word.toLowerCase()]} ${word}${after}`);
-		result += prose.replace(INLINE, (match, slashes: string | undefined, marker: string | undefined, label: string | undefined, symbol: string | undefined, offset: number) => {
-			if (inBold && nativeBold && (label !== undefined || symbol !== undefined)) return match;
-			if (symbol !== undefined) {
-				const color = /[✓✔]/.test(symbol) ? palette.passed : /[✗✘]/.test(symbol) ? palette.failed : symbol === "→" ? palette.arrow : palette.tree;
-				return color ? color(symbol) + (inBold ? boldOpen : "") : match;
-			}
+		if (palette.passed) prose = prose.replace(/[✓✔]/g, (m) => palette.passed!(m) + (inBold ? open : ""));
+		if (palette.failed) prose = prose.replace(/[✗✘]/g, (m) => palette.failed!(m) + (inBold ? open : ""));
+		if (palette.arrow) prose = prose.replace(/→/g, (m) => palette.arrow!(m) + (inBold ? open : ""));
+		if (palette.tree) prose = prose.replace(/[├└]──/g, (m) => palette.tree!(m) + (inBold ? open : ""));
+		result += prose.replace(INLINE, (match, slashes: string | undefined, marker: string | undefined, label: string | undefined) => {
 			if (label !== undefined) {
 				if (!palette.pills || !label.trim()) return match;
 				return pill(label, palette) + reopen();
 			}
 			if ((slashes ?? "").length % 2 === 1) return match; // escaped marker
 			if (!inBold) {
-				const rest = [prose.slice(offset + match.length), ...parts.slice(i + 2).filter((_, index) => index % 2 === 0)].join("\n");
-				const end = [...rest.matchAll(INLINE)].find((m) => m[2] === marker && m[1].length % 2 === 0)?.index ?? rest.length;
-				// Keep @-containing prose native: any ANSI tail can become part of a bare email's mailto.
-				nativeBold = rest.slice(0, end).includes("@");
-				boldOpen = nativeBold ? "" : open;
-				boldClose = nativeBold ? "" : close;
 				inBold = marker;
-				return `${slashes}${marker}${boldOpen}`;
+				return `${slashes}${marker}${open}`;
 			}
 			if (inBold === marker) {
 				inBold = undefined;
-				return `${slashes}${boldClose}${marker}`;
+				return `${slashes}${close}${marker}`;
 			}
 			return match;
 		});
 	}
 	// An unclosed span (streaming or literal asterisks) ends its color at the line end.
-	if (inBold) result += boldClose;
+	if (inBold) result += close;
 	return result;
 }
 
