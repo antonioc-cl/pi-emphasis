@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { marked, type Tokens } from "marked";
 import { CONTEXT_WORDS, VOCABULARY, createPalette, decorate, replyGuidance, toneOf, type ThemeLike } from "../index.ts";
 
 // A theme whose colors are readable tags, so tests can assert on what was colored.
@@ -59,12 +61,71 @@ describe("action lead-ins", () => {
 	test("without a colon they are ordinary bold", () => expect(plain("please **do** it and **run** that")).toBe("please **<mdLink>do</>** it and **<mdLink>run</>** that"));
 });
 
+describe("email autolinks", () => {
+	const identity = (text: string) => text;
+	const markdownTheme: MarkdownTheme = {
+		heading: identity, link: identity, linkUrl: identity, code: identity,
+		codeBlock: identity, codeBlockBorder: identity, quote: identity, quoteBorder: identity,
+		hr: identity, listBullet: identity, bold: (text) => `\x1b[1m${text}\x1b[22m`,
+		italic: identity, strikethrough: identity, underline: identity,
+	};
+	const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "");
+
+	for (const [name, open] of [
+		["standard", "\x1b[34m"], ["256-color", "\x1b[38;5;208m"], ["truecolor", "\x1b[38;2;255;128;0m"],
+	]) {
+		const ansiPalette = createPalette({
+			fg: (_color, text) => `${open}${text}\x1b[39m`,
+			getFgAnsi: () => open,
+			getBgAnsi: () => open.replace("[38;", "[48;").replace("[34m", "[44m"),
+		});
+		test.each<[string, string, string[]]>([
+			["**person@example.com**", "person@example.com", ["person@example.com"]],
+			["__person@example.com__", "person@example.com", ["person@example.com"]],
+			["(**person@example.com**),", "(person@example.com),", ["person@example.com"]],
+			["**Contact person@example.com, then other+tag@example.org.**", "Contact person@example.com, then other+tag@example.org.", ["person@example.com", "other+tag@example.org"]],
+			["**person@example.com** and **other@example.org**", "person@example.com and other@example.org", ["person@example.com", "other@example.org"]],
+			["**Contact `literal`person@example.com**", "Contact literalperson@example.com", ["person@example.com"]],
+			["**person@example.com `**` later**", "person@example.com ** later", ["person@example.com"]],
+			["**person@example.com [[Done]] other@example.org**", "person@example.com [[Done]] other@example.org", ["person@example.com", "other@example.org"]],
+			["**→person@example.com**", "→person@example.com", ["person@example.com"]],
+			["**[[Done]]person@example.com**", "[[Done]]person@example.com", ["person@example.com"]],
+			["**person@example.com [[Done]]**", "person@example.com [[Done]]", ["person@example.com"]],
+			["**Contact \\*\\*person@example.com**", "Contact **person@example.com", ["person@example.com"]],
+		])(`${name}: %s keeps text and mailto`, (source, visible, addresses) => {
+			const decorated = decorate(source, ansiPalette);
+			const links: Tokens.Link[] = [];
+			marked.walkTokens(marked.lexer(decorated), (token) => {
+				if (token.type === "link") links.push(token as Tokens.Link);
+			});
+			expect(links.map(({ text, href }) => ({ text, href }))).toEqual(addresses.map((text) => ({ text, href: `mailto:${text}` })));
+			const rendered = new Markdown(decorated, 0, 0, markdownTheme).render(200).join("\n");
+			expect(stripAnsi(rendered).trimEnd()).toBe(visible);
+			expect(rendered).toContain("\x1b[1m");
+		});
+
+		test(`${name}: only the affected bold span falls back to native color`, () => {
+			const decorated = decorate("**ordinary** **person@example.com** **later**", ansiPalette);
+			expect(decorated).toBe(`**${open}ordinary\x1b[39m** **person@example.com** **${open}later\x1b[39m**`);
+			expect(decorate("**ordinary `person@example.com` prose**", ansiPalette)).toBe(`**${open}ordinary \`person@example.com\`${open} prose\x1b[39m**`);
+			expect(decorate("**person@example.com", ansiPalette)).toBe("**person@example.com");
+			expect(decorate("**→person@example.com** [[Done]]", ansiPalette)).toBe(`**→person@example.com** ${decorate("[[Done]]", ansiPalette)}`);
+			expect(decorate("**ordinary → text**", ansiPalette)).toBe(`**${open}ordinary ${open}→\x1b[39m${open} text\x1b[39m**`);
+		});
+	}
+});
+
 describe("what is left alone", () => {
 	test("fenced code", () => {
 		const block = "```\n**Cause:** → [[Done]]\n```";
 		expect(plain(block)).toBe(block);
 	});
 	test("inline code", () => expect(plain("`[[Done]] → **x**`")).toBe("`[[Done]] → **x**`"));
+	test("emails inside code and escaped bold markers", () => {
+		for (const source of ["`**person@example.com**`", "```\n**person@example.com**\n```", "\\*\\*person@example.com\\*\\*"]) {
+			expect(decorate(source, palette)).toBe(source);
+		}
+	});
 	test("escaped asterisks", () => expect(plain("\\*\\*not bold\\*\\*")).toBe("\\*\\*not bold\\*\\*"));
 });
 

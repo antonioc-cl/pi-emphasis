@@ -148,8 +148,8 @@ export function createPalette(theme: ThemeLike, boldColor = "mdLink"): Palette {
 }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-// Escaped bold markers, bold markers, or a [[pill]] of 1-32 characters.
-const INLINE = /(\\*)(\*\*|__)|\[\[([^\[\]\n]{1,32})\]\]/g;
+// Bold markers, a [[pill]] of 1-32 characters, or a colored mark/tree connector.
+const INLINE = /(\\*)(\*\*|__)|\[\[([^\[\]\n]{1,32})\]\]|([✓✔✗✘→]|[├└]──)/g;
 
 /** Apply colors to assistant Markdown, leaving code blocks, inline code and headings alone. */
 export function decorate(markdown: string, palette: Palette): string {
@@ -207,39 +207,49 @@ function decorateLine(line: string, palette: Palette, open: string, close: strin
 	const parts = line.replace(LEAD_LABEL, (_, before: string, label: string, after: string) => before + withLabelIcon(label) + after).split(/(`+[^`]*?`+)/g);
 	let result = "";
 	let inBold: string | undefined;
-	const reopen = () => (inBold ? `\x1b[1m${open}` : "");
+	let boldOpen = open;
+	let boldClose = close;
+	let nativeBold = false;
+	const reopen = () => (inBold ? `\x1b[1m${boldOpen}` : "");
 	for (let i = 0; i < parts.length; i++) {
 		const part = parts[i];
 		if (i % 2 === 1) {
 			// Pi's code color ends with a foreground reset; restore the bold color after it.
-			result += inBold ? `${part}${open}` : part;
+			result += inBold ? `${part}${boldOpen}` : part;
 			continue;
 		}
 		let prose = part;
 		if (process.env.PI_EMPHASIS_PILL_ICONS !== "0") prose = prose.replace(ACTION_LABEL, (_, before: string, word: string, after: string) => `${before}${ACTION_ICONS[word.toLowerCase()]} ${word}${after}`);
-		if (palette.passed) prose = prose.replace(/[✓✔]/g, (m) => palette.passed!(m) + (inBold ? open : ""));
-		if (palette.failed) prose = prose.replace(/[✗✘]/g, (m) => palette.failed!(m) + (inBold ? open : ""));
-		if (palette.arrow) prose = prose.replace(/→/g, (m) => palette.arrow!(m) + (inBold ? open : ""));
-		if (palette.tree) prose = prose.replace(/[├└]──/g, (m) => palette.tree!(m) + (inBold ? open : ""));
-		result += prose.replace(INLINE, (match, slashes: string | undefined, marker: string | undefined, label: string | undefined) => {
+		result += prose.replace(INLINE, (match, slashes: string | undefined, marker: string | undefined, label: string | undefined, symbol: string | undefined, offset: number) => {
+			if (inBold && nativeBold && (label !== undefined || symbol !== undefined)) return match;
+			if (symbol !== undefined) {
+				const color = /[✓✔]/.test(symbol) ? palette.passed : /[✗✘]/.test(symbol) ? palette.failed : symbol === "→" ? palette.arrow : palette.tree;
+				return color ? color(symbol) + (inBold ? boldOpen : "") : match;
+			}
 			if (label !== undefined) {
 				if (!palette.pills || !label.trim()) return match;
 				return pill(label, palette) + reopen();
 			}
 			if ((slashes ?? "").length % 2 === 1) return match; // escaped marker
 			if (!inBold) {
+				const rest = [prose.slice(offset + match.length), ...parts.slice(i + 2).filter((_, index) => index % 2 === 0)].join("\n");
+				const end = [...rest.matchAll(INLINE)].find((m) => m[2] === marker && m[1].length % 2 === 0)?.index ?? rest.length;
+				// Keep @-containing prose native: any ANSI tail can become part of a bare email's mailto.
+				nativeBold = rest.slice(0, end).includes("@");
+				boldOpen = nativeBold ? "" : open;
+				boldClose = nativeBold ? "" : close;
 				inBold = marker;
-				return `${slashes}${marker}${open}`;
+				return `${slashes}${marker}${boldOpen}`;
 			}
 			if (inBold === marker) {
 				inBold = undefined;
-				return `${slashes}${close}${marker}`;
+				return `${slashes}${boldClose}${marker}`;
 			}
 			return match;
 		});
 	}
 	// An unclosed span (streaming or literal asterisks) ends its color at the line end.
-	if (inBold) result += close;
+	if (inBold) result += boldClose;
 	return result;
 }
 
@@ -290,6 +300,7 @@ export default function emphasis(pi: ExtensionAPI) {
 	let built: { theme: ThemeLike; palette: Palette } | undefined;
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		// SAFETY: Pi's Theme provides the three methods required by ThemeLike.
 		currentTheme = () => ctx.ui.theme as unknown as ThemeLike;
 	});
 	// The rules travel with the renderer: only a session that draws pills is told to write them.
