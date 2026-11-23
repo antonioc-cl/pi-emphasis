@@ -148,8 +148,8 @@ export function createPalette(theme: ThemeLike, boldColor = "mdLink"): Palette {
 }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-// Bold markers, a [[pill]] of 1-32 characters, or a colored mark/tree connector.
-const INLINE = /(\\*)(\*\*|__)|\[\[([^\[\]\n]{1,32})\]\]|([✓✔✗✘→]|[├└]──)/g;
+// Intraword underscore runs are literal, including runs longer than two underscores.
+const INLINE = /(\\*)(\*\*|(?<![\p{L}\p{N}_])__|__(?![\p{L}\p{N}_]))|\[\[([^\[\]\n]{1,32})\]\]|([✓✔✗✘→]|[├└]──)/gu;
 
 /** Apply colors to assistant Markdown, leaving code blocks, inline code and headings alone. */
 export function decorate(markdown: string, palette: Palette): string {

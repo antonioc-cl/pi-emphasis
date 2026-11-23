@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Markdown, getCapabilities, setCapabilities, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { marked, type Tokens } from "marked";
 import { CONTEXT_WORDS, VOCABULARY, createPalette, decorate, replyGuidance, toneOf, type ThemeLike } from "../index.ts";
 
@@ -82,6 +82,14 @@ describe("email autolinks", () => {
 		test.each<[string, string, string[]]>([
 			["**person@example.com**", "person@example.com", ["person@example.com"]],
 			["__person@example.com__", "person@example.com", ["person@example.com"]],
+			...[2, 3, 4].flatMap((count): [string, string, string[]][] => {
+				const address = `first${"_".repeat(count)}last@example.com`;
+				return [
+					[`__${address}__`, address, [address]],
+					[`__Contact ${address}__`, `Contact ${address}`, [address]],
+					[`__${address} → [[Done]]__`, `${address} → [[Done]]`, [address]],
+				];
+			}),
 			["(**person@example.com**),", "(person@example.com),", ["person@example.com"]],
 			["**Contact person@example.com, then other+tag@example.org.**", "Contact person@example.com, then other+tag@example.org.", ["person@example.com", "other+tag@example.org"]],
 			["**person@example.com** and **other@example.org**", "person@example.com and other@example.org", ["person@example.com", "other@example.org"]],
@@ -99,9 +107,18 @@ describe("email autolinks", () => {
 				if (token.type === "link") links.push(token as Tokens.Link);
 			});
 			expect(links.map(({ text, href }) => ({ text, href }))).toEqual(addresses.map((text) => ({ text, href: `mailto:${text}` })));
-			const rendered = new Markdown(decorated, 0, 0, markdownTheme).render(200).join("\n");
-			expect(stripAnsi(rendered).trimEnd()).toBe(visible);
-			expect(rendered).toContain("\x1b[1m");
+			const capabilities = getCapabilities();
+			try {
+				setCapabilities({ ...capabilities, hyperlinks: true });
+				const rendered = new Markdown(decorated, 0, 0, markdownTheme).render(200).join("\n");
+				expect(stripAnsi(rendered).trimEnd()).toBe(visible);
+				expect(rendered).toContain("\x1b[1m");
+				expect(rendered).toBe(new Markdown(source, 0, 0, markdownTheme).render(200).join("\n"));
+				const destinations = [...rendered.matchAll(/\x1b\]8;;([^\x1b]+)\x1b\\/g)].map((match) => match[1]);
+				expect(destinations).toEqual(addresses.map((address) => `mailto:${address}`));
+			} finally {
+				setCapabilities(capabilities);
+			}
 		});
 
 		test(`${name}: only the affected bold span falls back to native color`, () => {
@@ -111,6 +128,8 @@ describe("email autolinks", () => {
 			expect(decorate("**person@example.com", ansiPalette)).toBe("**person@example.com");
 			expect(decorate("**→person@example.com** [[Done]]", ansiPalette)).toBe(`**→person@example.com** ${decorate("[[Done]]", ansiPalette)}`);
 			expect(decorate("**ordinary → text**", ansiPalette)).toBe(`**${open}ordinary ${open}→\x1b[39m${open} text\x1b[39m**`);
+			expect(decorate("__ordinary__ __first__last@example.com__ __later__", ansiPalette)).toBe(`__${open}ordinary\x1b[39m__ __first__last@example.com__ __${open}later\x1b[39m__`);
+			expect(decorate("__ordinary first___last prose__", ansiPalette)).toBe(`__${open}ordinary first___last prose\x1b[39m__`);
 		});
 	}
 });
